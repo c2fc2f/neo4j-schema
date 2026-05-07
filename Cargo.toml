@@ -5,7 +5,7 @@ edition = "2024"
 authors = [
   "c2fc2f <contact@c2fc2f.com>"
 ]
-description = "A Rust CLI tool that introspects Neo4j databases to generate human-readable schema"
+description = "A CLI tool that introspects Neo4j databases to generate human-readable schema"
 readme = "README.md"
 repository = "https://github.com/c2fc2f/neo4j-schema"
 license = "MIT"
@@ -32,4 +32,7 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 
 [dependencies]
-
+anyhow = "1"
+clap   = { version = "4", features = ["derive", "env"] }
+neo4rs = "0.8"
+tokio  = { version = "1", features = ["full"] }
