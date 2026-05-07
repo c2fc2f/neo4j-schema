@@ -1,2 +1,7 @@
 debug
 target
+
+mutagen.yml
+mutagen.yml.lock
+
+code.tar.gz
