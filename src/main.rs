@@ -55,13 +55,17 @@ struct Args {
     #[arg(long, action)]
     no_examples: bool,
 
-    /// Only index properties under the most specific (last) label in a
-    /// taxonomy.
+    /// Only introspect specific node labels (colon-separated).
     ///
-    /// When set, if a node has multiple labels like [:Animal:Mammal:Dog],
-    /// properties will only be documented under 'Dog'.
-    #[arg(long, action)]
-    most_specific: bool,
+    /// Example: --nodes Person:Movie
+    #[arg(long, value_delimiter = ':')]
+    nodes: Option<Vec<String>>,
+
+    /// Only introspect specific relationship types (colon-separated).
+    ///
+    /// Example: --edges ACTED_IN:DIRECTED
+    #[arg(long, value_delimiter = ':')]
+    rels: Option<Vec<String>>,
 }
 
 /// Raw type metadata for a single property as returned by the schema
@@ -304,12 +308,11 @@ async fn annotate(
 /// groups properties shared by label combinations). Each label gets its own
 /// entry so the output map is fully denormalised and easy to iterate.
 ///
-/// When `most_specific` is `true`, only the last label returned in the
-/// `nodeLabels` list (representing the most refined sub-class in a taxonomy)
-/// is retained, and all more general super-class labels are discarded.
+/// When `node_filter` is `Some`, only labels present in the provided list
+/// are processed. All other labels are ignored.
 async fn fetch_node_props(
     graph: &Graph,
-    most_specific: bool,
+    node_filter: Option<&Vec<String>>,
 ) -> Result<BTreeMap<String, BTreeMap<String, PropInfo>>> {
     let mut node_props: BTreeMap<String, BTreeMap<String, PropInfo>> =
         BTreeMap::new();
@@ -331,30 +334,31 @@ async fn fetch_node_props(
         .context("Failed to run nodeTypeProperties")?;
 
     while let Some(row) = result.next().await? {
-        let mut labels: Vec<String> = row.get("Label").unwrap_or_default();
+        let labels: Vec<String> = row.get("Label").unwrap_or_default();
         let prop_name: Option<String> = row.get("Property")?;
         let types: IndexSet<String> = row.get("Type").unwrap_or_default();
         let required: bool = row.get("Required")?;
 
-        let Some(name) = prop_name else { continue };
-
-        if most_specific && let Some(label) = labels.pop() {
-            labels = vec![label];
-        }
-
         for label in labels {
-            node_props
-                .entry(label)
-                .or_default()
-                .entry(name.clone())
-                .and_modify(|info| {
-                    info.required &= required;
-                    info.types.extend(types.clone());
-                })
-                .or_insert_with(|| PropInfo {
-                    types: types.clone(),
-                    required,
-                });
+            if let Some(node_filter) = node_filter
+                && !node_filter.contains(&label)
+            {
+                continue;
+            }
+
+            let bt: &mut BTreeMap<String, PropInfo> =
+                node_props.entry(label).or_default();
+            if let Some(name) = &prop_name {
+                bt.entry(name.clone())
+                    .and_modify(|info| {
+                        info.required &= required;
+                        info.types.extend(types.clone());
+                    })
+                    .or_insert_with(|| PropInfo {
+                        types: types.clone(),
+                        required,
+                    });
+            };
         }
     }
 
@@ -373,8 +377,12 @@ async fn fetch_node_props(
 /// both the start and end node labels exist within the provided map. This
 /// prevents generic super-class relationships from referencing orphaned
 /// labels that were excluded during strict taxonomy resolution.
+///
+/// When `rel_filter` is `Some`, only relationship types present in the
+/// provided list are processed.
 async fn fetch_rel_props(
     graph: &Graph,
+    rel_filter: Option<&Vec<String>>,
 ) -> Result<BTreeMap<String, BTreeMap<String, PropInfo>>> {
     let mut rel_props: BTreeMap<String, BTreeMap<String, PropInfo>> =
         BTreeMap::new();
@@ -401,11 +409,16 @@ async fn fetch_rel_props(
         let types: IndexSet<String> = row.get("Type").unwrap_or_default();
         let required: bool = row.get("Required")?;
 
+        if let Some(rel_filter) = rel_filter
+            && !rel_filter.contains(&rel_type)
+        {
+            continue;
+        }
+
+        let bt: &mut BTreeMap<String, PropInfo> =
+            rel_props.entry(rel_type).or_default();
         if let Some(name) = prop_name {
-            rel_props
-                .entry(rel_type)
-                .or_default()
-                .entry(name.clone())
+            bt.entry(name.clone())
                 .and_modify(|info| {
                     info.required &= required;
                     info.types.extend(types.clone());
@@ -427,10 +440,13 @@ async fn fetch_rel_props(
 /// end labels)` triple. When a node carries multiple labels they are joined
 /// with `:` (e.g. `"Person:Actor"`).
 ///
-/// When `nodes` is `Some`
+/// When `node_filter` or `rel_filter` are provided, the topology is strictly
+/// constrained to patterns where the start node, relationship, and end node
+/// all exist within the allowed sets.
 async fn fetch_patterns(
     graph: &Graph,
-    nodes: Option<&BTreeMap<String, Vec<ResolvedProp>>>,
+    node_filter: Option<&Vec<String>>,
+    rel_filter: Option<&Vec<String>>,
 ) -> Result<BTreeSet<(String, String, String)>> {
     let mut patterns: BTreeSet<(String, String, String)> = BTreeSet::new();
 
@@ -454,9 +470,15 @@ async fn fetch_patterns(
         let rel: String = row.get("Relationship").unwrap_or_default();
         let mut end: Vec<String> = row.get("EndNode").unwrap_or_default();
 
-        if let Some(nodes) = nodes {
-            start.retain(|s| nodes.contains_key(s));
-            end.retain(|s| nodes.contains_key(s));
+        if let Some(rel_filter) = rel_filter
+            && !rel_filter.contains(&rel)
+        {
+            continue;
+        }
+
+        if let Some(node_filter) = node_filter {
+            start.retain(|s| node_filter.contains(s));
+            end.retain(|s| node_filter.contains(s));
         }
 
         if !start.is_empty() && !end.is_empty() {
@@ -567,7 +589,7 @@ async fn main() -> Result<()> {
         async {
             resolve_annotations(
                 &graph,
-                &fetch_node_props(&graph, args.most_specific).await?,
+                &fetch_node_props(&graph, args.nodes.as_ref()).await?,
                 |label| format!("MATCH (target:`{label}`)"),
                 args.no_examples,
             )
@@ -576,7 +598,7 @@ async fn main() -> Result<()> {
         async {
             resolve_annotations(
                 &graph,
-                &fetch_rel_props(&graph).await?,
+                &fetch_rel_props(&graph, args.rels.as_ref()).await?,
                 |label| format!("MATCH ()-[target{label}]->()"),
                 args.no_examples,
             )
@@ -586,7 +608,7 @@ async fn main() -> Result<()> {
     .context("Failed to retrieve information")?;
 
     let patterns: BTreeSet<(String, String, String)> =
-        fetch_patterns(&graph, args.most_specific.then_some(&nodes))
+        fetch_patterns(&graph, args.nodes.as_ref(), args.rels.as_ref())
             .await
             .context("Failed to retrieve information")?;
 

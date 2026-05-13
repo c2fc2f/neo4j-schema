@@ -52,7 +52,8 @@ neo4j-schema [OPTIONS]
 | `--password <PASSWORD>` | Neo4j password. Can also be supplied via the `NEO4J_PASSWORD` environment variable to avoid exposing credentials in shell history | `neo4j` |
 | `--database <DATABASE>` | Name of the target database within the Neo4j instance | `neo4j` |
 | `--no-examples` | Skip per-property example / min-max queries. Only type information is printed; significantly reduces the number of Cypher round-trips and is useful for large databases where annotation queries would be too slow | *(disabled)* |
-| `--most-specific` | Only document properties under the most specific (last) label in a taxonomy. When a node carries multiple labels like `[:Animal:Mammal:Dog]`, properties are only listed under `Dog` | *(disabled)* |
+| `--nodes <LABELS>` | Only introspect the specified node labels. Labels are colon-separated (e.g. `Person:Movie`). Topology patterns are constrained to the allowed set — only edges where both endpoints are in the list are emitted | *(all labels)* |
+| `--rels <TYPES>` | Only introspect the specified relationship types. Types are colon-separated (e.g. `ACTED_IN:DIRECTED`). Topology patterns are constrained to the allowed set | *(all types)* |
 
 ### Examples
 
@@ -71,7 +72,13 @@ NEO4J_PASSWORD=secret neo4j-schema --uri bolt://db.example.com:7687 --database m
 Produce a lightweight schema (types only, no example values) for a large production database:
 
 ```bash
-neo4j-schema --uri bolt://prod:7687 --no-examples --most-specific
+neo4j-schema --uri bolt://prod:7687 --no-examples
+```
+
+Scope the output to a specific subset of the graph — useful when feeding a focused slice to an LLM:
+
+```bash
+neo4j-schema --nodes Person:Movie --rels ACTED_IN:DIRECTED
 ```
 
 ## Output Format
